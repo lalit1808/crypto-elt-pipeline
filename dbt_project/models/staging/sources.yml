@@ -1,0 +1,17 @@
+version: 2
+
+sources:
+  - name: raw
+    schema: raw
+    tables:
+      - name: all_crypto_data
+        description: >
+          Legacy one-time historical seed, backfilled via the CoinGecko
+          market_chart API for 180 days. No longer actively updated;
+          kept as the foundation for pre-pipeline history.
+      - name: daily_crypto
+        description: >
+          Every snapshot captured for tracked coins, appended hourly
+          plus once more at 23:59 for a clean end-of-day capture.
+          Never deleted; this is the append-only source of truth for
+          all price history generated since the pipeline went live.

@@ -1,0 +1,94 @@
+version: 2
+
+models:
+  - name: fact_daily_price_summary
+    description: >
+      One row per coin per fully completed day. Open = earliest snapshot
+      of the day, close = latest snapshot of the day, high/low = extremes
+      across all snapshots, avg = mean across all snapshots. Only
+      processes days before today; never includes an in-progress day.
+      Refreshed nightly at 00:05 via crypto_daily_summary_dag.
+    columns:
+      - name: coin_id
+        description: CoinGecko coin identifier.
+        tests:
+          - not_null
+      - name: price_date
+        description: The completed calendar day this row summarizes.
+        tests:
+          - not_null
+      - name: open_price_eur
+        description: Price at the earliest snapshot of the day.
+      - name: close_price_eur
+        description: Price at the latest snapshot of the day.
+      - name: high_price_eur
+        description: Highest price seen across all of the day's snapshots.
+      - name: low_price_eur
+        description: Lowest price seen across all of the day's snapshots.
+      - name: avg_price_eur
+        description: Mean price across all of the day's snapshots.
+      - name: avg_market_cap_eur
+        description: Mean market capitalization in EUR across the day's snapshots.
+      - name: avg_volume_eur
+        description: Mean 24h trading volume in EUR across the day's snapshots.
+      - name: movement_pct_of_the_day
+        description: >
+          Percentage change from open to close for the day,
+          calculated as (close - open) / open * 100. Positive for
+          gains, negative for losses.
+
+  - name: fact_crypto_price_daily
+    description: >
+      Merged daily price history combining three sources: the legacy
+      180-day seed (for dates not covered elsewhere), finalized daily
+      summaries (for completed days), and a live average for today.
+      Provides continuous, gap-free history that grows automatically
+      every night as fact_daily_price_summary adds new finalized days.
+    columns:
+      - name: coin_id
+        description: CoinGecko coin identifier.
+        tests:
+          - not_null
+      - name: price_date
+        description: Calendar date this row represents.
+        tests:
+          - not_null
+      - name: avg_price_eur
+        description: Average price in EUR for this coin on this date.
+        tests:
+          - not_null
+      - name: market_cap_eur
+        description: Average market capitalization in EUR for this date.
+      - name: volume_eur
+        description: Average 24h trading volume in EUR for this date.
+
+  - name: mart_daily_top_movers
+    description: >
+      Daily gainers and losers, ranked independently within each
+      completed day. Rank 1 gainer/loser resets for every price_date.
+    columns:
+      - name: coin_id
+        description: CoinGecko coin identifier.
+      - name: price_date
+        description: The completed day this ranking applies to.
+      - name: pct_change
+        description: Open-to-close percentage change for this coin on this day.
+      - name: gainer_rank
+        description: Rank 1 = biggest gainer that day.
+      - name: loser_rank
+        description: Rank 1 = biggest loser that day.
+
+  - name: mart_hourly_top_movers
+    description: >
+      Live, short-term gainers and losers for today, comparing each
+      coin's most recent snapshot to the one immediately before it.
+      Refreshes every hour alongside crypto_hourly_dag.
+    columns:
+      - name: coin_id
+        description: CoinGecko coin identifier.
+      - name: pct_change
+        description: Percentage change between the last two hourly snapshots.
+      - name: gainer_rank
+        description: Rank 1 = biggest gainer in the most recent hour.
+      - name: loser_rank
+        description: Rank 1 = biggest loser in the most recent hour.

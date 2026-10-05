@@ -1,0 +1,36 @@
+version: 2
+
+models:
+  - name: stg_crypto_prices
+    description: >
+      Cleaned, typed pass-through of the legacy 180-day historical seed.
+      One row per coin per day, averaged across whatever snapshots
+      CoinGecko returned for that day during the original backfill.
+    columns:
+      - name: coin_id
+        description: CoinGecko coin identifier (e.g. "bitcoin").
+        tests:
+          - not_null
+      - name: price_eur
+        description: Averaged price in EUR for that calendar day.
+        tests:
+          - not_null
+
+  - name: stg_daily_crypto
+    description: >
+      Cleaned, typed pass-through of every hourly (and end-of-day)
+      snapshot. One row per coin per API call; grows forever, never
+      deduplicated or aggregated at this layer.
+    columns:
+      - name: coin_id
+        description: CoinGecko coin identifier (e.g. "bitcoin").
+        tests:
+          - not_null
+      - name: snapshot_at
+        description: Timestamp reported by the API for this snapshot.
+        tests:
+          - not_null
+      - name: loaded_date
+        description: Calendar date (UTC) this snapshot belongs to.
+        tests:
+          - not_null
