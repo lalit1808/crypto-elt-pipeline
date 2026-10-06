@@ -7,7 +7,7 @@ from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.operators.bash import BashOperator
 
-from crypto_pipeline import ensure_tables, get_tracked_coins, extract_normalize_load_daily
+from crypto_pipeline import ensure_tables, get_tracked_coins, backfill_new_coins, extract_normalize_load_daily
 
 default_args = {
     "owner": "lalit",
@@ -19,6 +19,7 @@ default_args = {
 def run_hourly_snapshot():
     ensure_tables()
     coin_ids = get_tracked_coins()
+    backfill_new_coins(coin_ids)
     extract_normalize_load_daily(coin_ids)
 
 
