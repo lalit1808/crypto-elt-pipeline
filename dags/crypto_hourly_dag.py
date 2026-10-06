@@ -7,12 +7,32 @@ from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.operators.bash import BashOperator
 
-from crypto_pipeline import ensure_tables, get_tracked_coins, backfill_new_coins, extract_normalize_load_daily
+from crypto_pipeline import (
+    ensure_tables,
+    get_tracked_coins,
+    backfill_new_coins,
+    extract_normalize_load_daily,
+    send_slack_alert,
+)
+
+
+def alert_on_failure(context):
+    task_id = context["task_instance"].task_id
+    dag_id = context["task_instance"].dag_id
+    execution_date = context["execution_date"]
+    send_slack_alert(
+        f":red_circle: Airflow task failed\n"
+        f"DAG: {dag_id}\n"
+        f"Task: {task_id}\n"
+        f"Time: {execution_date}"
+    )
+
 
 default_args = {
     "owner": "lalit",
     "retries": 1,
     "retry_delay": timedelta(minutes=5),
+    "on_failure_callback": alert_on_failure,
 }
 
 
@@ -47,4 +67,9 @@ with DAG(
         bash_command="cd /opt/airflow/dbt_project && dbt test --profiles-dir .",
     )
 
-    extract_task >> dbt_run_task >> dbt_test_task
+    dbt_freshness_task = BashOperator(
+        task_id="dbt_source_freshness",
+        bash_command="cd /opt/airflow/dbt_project && dbt source freshness --profiles-dir .",
+    )
+
+    extract_task >> dbt_run_task >> dbt_test_task >> dbt_freshness_task

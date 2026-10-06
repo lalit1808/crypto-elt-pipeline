@@ -12,6 +12,7 @@ x-airflow-common: &airflow-common
     WAREHOUSE_DB_NAME: warehouse_db
     WAREHOUSE_DB_USER: warehouse
     WAREHOUSE_DB_PASSWORD: warehouse
+    SLACK_WEBHOOK_URL: '${SLACK_WEBHOOK_URL}'
   volumes:
     - ./dags:/opt/airflow/dags
     - ./extract_load:/opt/airflow/extract_load

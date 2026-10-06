@@ -27,6 +27,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+def send_slack_alert(message):
+    webhook_url = os.environ.get("SLACK_WEBHOOK_URL")
+    if not webhook_url:
+        logger.warning("SLACK_WEBHOOK_URL not set, skipping alert")
+        return
+    try:
+        requests.post(webhook_url, json={"text": message}, timeout=10)
+    except requests.RequestException as e:
+        logger.warning(f"Failed to send Slack alert: {e}")
 
 def load_sql(relative_path):
     full_path = os.path.join(SQL_DIR, relative_path)
