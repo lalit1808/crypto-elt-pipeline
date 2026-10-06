@@ -7,7 +7,6 @@ models:
       of the day, close = latest snapshot of the day, high/low = extremes
       across all snapshots, avg = mean across all snapshots. Only
       processes days before today; never includes an in-progress day.
-      Refreshed nightly at 00:05 via crypto_daily_summary_dag.
     columns:
       - name: coin_id
         description: CoinGecko coin identifier.
@@ -34,16 +33,13 @@ models:
       - name: movement_pct_of_the_day
         description: >
           Percentage change from open to close for the day,
-          calculated as (close - open) / open * 100. Positive for
-          gains, negative for losses.
+          calculated as (close - open) / open * 100.
 
   - name: fact_crypto_price_daily
     description: >
       Merged daily price history combining three sources: the legacy
-      180-day seed (for dates not covered elsewhere), finalized daily
-      summaries (for completed days), and a live average for today.
-      Provides continuous, gap-free history that grows automatically
-      every night as fact_daily_price_summary adds new finalized days.
+      180-day seed, finalized daily summaries, and a live average for
+      today. Provides continuous, gap-free history.
     columns:
       - name: coin_id
         description: CoinGecko coin identifier.
@@ -65,30 +61,58 @@ models:
   - name: mart_daily_top_movers
     description: >
       Daily gainers and losers, ranked independently within each
-      completed day. Rank 1 gainer/loser resets for every price_date.
+      completed day.
     columns:
       - name: coin_id
         description: CoinGecko coin identifier.
+        tests:
+          - not_null
       - name: price_date
         description: The completed day this ranking applies to.
+        tests:
+          - not_null
       - name: pct_change
         description: Open-to-close percentage change for this coin on this day.
+        tests:
+          - not_null
       - name: gainer_rank
         description: Rank 1 = biggest gainer that day.
+        tests:
+          - not_null
       - name: loser_rank
         description: Rank 1 = biggest loser that day.
+        tests:
+          - not_null
 
   - name: mart_hourly_top_movers
     description: >
       Live, short-term gainers and losers for today, comparing each
       coin's most recent snapshot to the one immediately before it.
-      Refreshes every hour alongside crypto_hourly_dag.
     columns:
       - name: coin_id
         description: CoinGecko coin identifier.
+        tests:
+          - not_null
       - name: pct_change
         description: Percentage change between the last two hourly snapshots.
+        tests:
+          - not_null
       - name: gainer_rank
         description: Rank 1 = biggest gainer in the most recent hour.
+        tests:
+          - not_null
       - name: loser_rank
         description: Rank 1 = biggest loser in the most recent hour.
+        tests:
+          - not_null
+
+  - name: dim_tracked_coins
+    description: >
+      Coins present in the most recent snapshot - i.e. currently in the
+      tracked top 25 by market cap, right now.
+    columns:
+      - name: coin_id
+        description: CoinGecko coin identifier.
+        tests:
+          - not_null
+          - unique
