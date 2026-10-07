@@ -10,6 +10,21 @@ jobs:
   dbt-check:
     runs-on: ubuntu-latest
 
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: warehouse
+          POSTGRES_PASSWORD: warehouse
+          POSTGRES_DB: warehouse_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -22,9 +37,32 @@ jobs:
       - name: Install dbt
         run: pip install dbt-postgres==1.11.0
 
+      - name: Load CI seed data
+        run: psql -h localhost -U warehouse -d warehouse_db -f ci_seed_data.sql
+        env:
+          PGPASSWORD: warehouse
+
       - name: Check dbt project parses correctly
         working-directory: dbt_project
-        run: dbt parse --profiles-dir . --no-partial-parse
+        run: dbt parse --profiles-dir .
+        env:
+          WAREHOUSE_DB_HOST: localhost
+          WAREHOUSE_DB_USER: warehouse
+          WAREHOUSE_DB_PASSWORD: warehouse
+          WAREHOUSE_DB_NAME: warehouse_db
+
+      - name: Run dbt models against seed data
+        working-directory: dbt_project
+        run: dbt run --profiles-dir .
+        env:
+          WAREHOUSE_DB_HOST: localhost
+          WAREHOUSE_DB_USER: warehouse
+          WAREHOUSE_DB_PASSWORD: warehouse
+          WAREHOUSE_DB_NAME: warehouse_db
+
+      - name: Run dbt tests against seed data
+        working-directory: dbt_project
+        run: dbt test --profiles-dir .
         env:
           WAREHOUSE_DB_HOST: localhost
           WAREHOUSE_DB_USER: warehouse
