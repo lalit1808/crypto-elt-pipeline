@@ -123,7 +123,7 @@ GitHub Actions spins up Postgres, loads seed data, runs `dbt run` +
 ## Why
 
 Wanted real, hands-on experience with dbt alongside the SQL/Python pipelines 
-I already build at work — not just reading about it. 
+I already build at work not just reading about it. 
 Built this to properly learn it: proper staging/mart structure, tests that run for real in CI,
 dbt orchestrated through Airflow with monitoring and alerting, 
 and a dashboard so the output's actually usable, not just sitting in a database.
