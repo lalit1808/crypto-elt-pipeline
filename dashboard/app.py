@@ -1,255 +1,188 @@
-import os
-import sys
-import time
-import logging
-from datetime import datetime, date
-
-import requests
 import psycopg2
-from psycopg2.extras import execute_values
+import pandas as pd
+import numpy as np
+import streamlit as st
+import plotly.graph_objects as go
 
-PIPELINE_DIR = os.path.dirname(os.path.abspath(__file__))
-SQL_DIR = os.path.join(PIPELINE_DIR, "..", "sql")
-CONFIG_DIR = os.path.join(PIPELINE_DIR, "..", "configs")
-sys.path.insert(0, CONFIG_DIR)
+DB_CONFIG = {
+    "host": "localhost",
+    "port": "5432",
+    "user": "warehouse",
+    "password": "warehouse",
+    "dbname": "warehouse_db",
+}
 
-from config import (
-    DB_CONFIG,
-    TRACKED_UNIVERSE_SIZE,
-    HISTORICAL_DAYS,
-    API_BASE,
-    REQUEST_DELAY_SECONDS,
-)
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s"
-)
-logger = logging.getLogger(__name__)
+st.set_page_config(page_title="Crypto Analytics", layout="wide")
 
 
-def load_sql(relative_path):
-    full_path = os.path.join(SQL_DIR, relative_path)
-    with open(full_path, "r") as f:
-        return f.read()
-
-
-def get_connection():
-    return psycopg2.connect(**DB_CONFIG)
-
-
-def send_slack_alert(message):
-    webhook_url = os.environ.get("SLACK_WEBHOOK_URL")
-    if not webhook_url:
-        logger.warning("SLACK_WEBHOOK_URL not set, skipping alert")
-        return
-    try:
-        requests.post(webhook_url, json={"text": message}, timeout=10)
-    except requests.RequestException as e:
-        logger.warning(f"Failed to send Slack alert: {e}")
-
-
-def ensure_tables():
-    conn = get_connection()
-    cur = conn.cursor()
-
-    cur.execute(load_sql("extract/create_all_crypto_data.sql"))
-    cur.execute(load_sql("extract/create_daily_crypto.sql"))
-
-    conn.commit()
-    cur.close()
+@st.cache_data(ttl=300)
+def load_table(query):
+    conn = psycopg2.connect(**DB_CONFIG)
+    df = pd.read_sql(query, conn)
     conn.close()
-    logger.info("Tables ensured: raw.all_crypto_data, raw.daily_crypto")
+    return df
 
 
-def get_tracked_coins(limit=TRACKED_UNIVERSE_SIZE):
-    url = f"{API_BASE}/coins/markets"
-    params = {
-        "vs_currency": "eur",
-        "order": "market_cap_desc",
-        "per_page": limit,
-        "page": 1,
-    }
-    response = requests.get(url, params=params, timeout=30)
-    response.raise_for_status()
-    coins = response.json()
-    coin_ids = [coin["id"] for coin in coins]
-    logger.info(f"Tracked universe (today's top {limit}): {len(coin_ids)} coins")
-    return coin_ids
+def forecast_prices(df, days_ahead=7):
+    df = df.sort_values("price_date")
+    x = np.arange(len(df))
+    y = df["avg_price_eur"].values
+
+    coeffs = np.polyfit(x, y, 1)
+    trend = np.poly1d(coeffs)
+
+    future_x = np.arange(len(df), len(df) + days_ahead)
+    future_prices = trend(future_x)
+
+    last_date = pd.to_datetime(df["price_date"].max())
+    future_dates = [last_date + pd.Timedelta(days=i + 1) for i in range(days_ahead)]
+
+    return pd.DataFrame({
+        "price_date": future_dates,
+        "avg_price_eur": future_prices,
+    })
 
 
-def get_known_coin_ids():
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("SELECT DISTINCT coin_id FROM raw.all_crypto_data;")
-    known = {row[0] for row in cur.fetchall()}
-    cur.close()
-    conn.close()
-    return known
+st.title("Crypto Analytics Dashboard")
 
+coins_df = load_table("SELECT coin_id FROM staging_marts.dim_tracked_coins ORDER BY coin_id")
+selected_coin = st.sidebar.selectbox("Select coin", coins_df["coin_id"])
 
-def get_all_known_coin_ids():
-    conn = get_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT coin_id FROM raw.daily_crypto
-        UNION
-        SELECT coin_id FROM raw.all_crypto_data;
+tab1, tab2, tab3 = st.tabs(["Price Trend & Forecast", "Daily Top Movers", "Hourly Top Movers"])
+
+with tab1:
+    st.subheader(f"{selected_coin} — price history and 7-day forecast")
+
+    full_history = load_table(f"""
+        SELECT price_date, avg_price_eur
+        FROM staging_marts.fact_price_history
+        WHERE coin_id = '{selected_coin}'
+        ORDER BY price_date
     """)
-    all_known = [row[0] for row in cur.fetchall()]
-    cur.close()
-    conn.close()
-    logger.info(f"All coins ever tracked: {len(all_known)}")
-    return all_known
 
+    if len(full_history) > 0:
+        min_date = pd.to_datetime(full_history["price_date"]).min().date()
+        max_date = pd.to_datetime(full_history["price_date"]).max().date()
 
-def backfill_single_coin(coin_id, days=HISTORICAL_DAYS):
-    upsert_sql = load_sql("insert/upsert_all_crypto_data.sql")
-    conn = get_connection()
-    cur = conn.cursor()
+        date_range = st.date_input(
+            "Date range",
+            value=(min_date, max_date),
+            min_value=min_date,
+            max_value=max_date,
+        )
 
-    url = f"{API_BASE}/coins/{coin_id}/market_chart"
-    params = {"vs_currency": "eur", "days": str(days)}
+        if len(date_range) == 2:
+            start_date, end_date = date_range
+            history = full_history[
+                (pd.to_datetime(full_history["price_date"]).dt.date >= start_date) &
+                (pd.to_datetime(full_history["price_date"]).dt.date <= end_date)
+            ]
+        else:
+            history = full_history
 
-    response = None
-    for attempt in range(3):
-        try:
-            response = requests.get(url, params=params, timeout=30)
-            if response.status_code == 429:
-                wait_time = 30 * (attempt + 1)
-                logger.warning(f"Rate limited on {coin_id}, waiting {wait_time}s (attempt {attempt + 1}/3)")
-                time.sleep(wait_time)
-                continue
-            response.raise_for_status()
-            break
-        except requests.RequestException as e:
-            logger.warning(f"Error fetching {coin_id} on attempt {attempt + 1}: {e}")
-            response = None
-            time.sleep(REQUEST_DELAY_SECONDS)
+        if len(history) >= 3:
+            forecast = forecast_prices(history, days_ahead=7)
 
-    if response is None or response.status_code != 200:
-        logger.warning(f"Giving up backfilling {coin_id} after 3 attempts")
-        cur.close()
-        conn.close()
-        return 0
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=history["price_date"], y=history["avg_price_eur"],
+                mode="lines", name="Actual", line=dict(color="royalblue")
+            ))
+            fig.add_trace(go.Scatter(
+                x=forecast["price_date"], y=forecast["avg_price_eur"],
+                mode="lines", name="Forecast (linear trend)",
+                line=dict(color="orange", dash="dash")
+            ))
+            fig.update_layout(xaxis_title="Date", yaxis_title="Avg Price (EUR)", height=500)
+            st.plotly_chart(fig, use_container_width=True)
 
-    data = response.json()
-    prices = data.get("prices", [])
-    market_caps = data.get("market_caps", [])
-    volumes = data.get("total_volumes", [])
+            st.caption(
+                "Forecast is a simple linear trend projection, not a trained model. "
+                "Treat it as a rough directional indicator, not a prediction."
+            )
+        else:
+            st.info("Not enough history in this range to forecast. Need at least 3 days of data.")
+    else:
+        st.info("No history available for this coin yet.")
 
-    if not (len(prices) == len(market_caps) == len(volumes)):
-        logger.warning(f"Skipping backfill for {coin_id}: mismatched array lengths")
-        cur.close()
-        conn.close()
-        return 0
+with tab2:
+    st.subheader("Daily Top Movers")
 
-    loaded_at = datetime.now()
-    daily_values = {}
-    for i in range(len(prices)):
-        ts_ms, price = prices[i]
-        _, market_cap = market_caps[i]
-        _, volume = volumes[i]
-        price_date = datetime.fromtimestamp(ts_ms / 1000).date()
-        if price_date not in daily_values:
-            daily_values[price_date] = {"prices": [], "market_caps": [], "volumes": []}
-        daily_values[price_date]["prices"].append(price)
-        daily_values[price_date]["market_caps"].append(market_cap)
-        daily_values[price_date]["volumes"].append(volume)
+    available_dates = load_table("""
+        SELECT DISTINCT price_date FROM staging_marts.mart_daily_top_movers
+        ORDER BY price_date DESC
+    """)
 
-    rows = []
-    for price_date, values in daily_values.items():
-        avg_price = sum(values["prices"]) / len(values["prices"])
-        avg_market_cap = sum(values["market_caps"]) / len(values["market_caps"])
-        avg_volume = sum(values["volumes"]) / len(values["volumes"])
-        rows.append((coin_id, price_date, avg_price, avg_market_cap, avg_volume, loaded_at))
+    selected_date = st.selectbox(
+        "Select date",
+        available_dates["price_date"],
+        index=0,
+    )
 
-    execute_values(cur, upsert_sql, rows)
-    conn.commit()
-    cur.close()
-    conn.close()
-    logger.info(f"Backfilled {len(rows)} historical rows for new coin {coin_id}")
-    return len(rows)
+    daily_movers = load_table(f"""
+        SELECT coin_id, price_date, open_price_eur, close_price_eur, pct_change, gainer_rank, loser_rank
+        FROM staging_marts.mart_daily_top_movers
+        WHERE price_date = '{selected_date}'
+        ORDER BY pct_change DESC
+    """)
 
+    top_n = 10
+    chart_data = pd.concat([
+        daily_movers.head(top_n),
+        daily_movers.tail(top_n)
+    ]).drop_duplicates(subset="coin_id").sort_values("pct_change")
 
-def backfill_new_coins(coin_ids):
-    known = get_known_coin_ids()
-    new_coins = [c for c in coin_ids if c not in known]
+    colors = ["crimson" if v < 0 else "seagreen" for v in chart_data["pct_change"]]
 
-    if not new_coins:
-        logger.info("No new coins detected in tracked universe")
-        return 0
+    fig2 = go.Figure(go.Bar(
+        x=chart_data["pct_change"],
+        y=chart_data["coin_id"],
+        orientation="h",
+        marker_color=colors,
+        text=chart_data["pct_change"].apply(lambda v: f"{v:+.2f}%"),
+        textposition="outside",
+    ))
+    fig2.update_layout(
+        title=f"Top gainers and losers — {selected_date}",
+        xaxis_title="% Change",
+        yaxis_title="",
+        height=500,
+    )
+    st.plotly_chart(fig2, use_container_width=True)
 
-    logger.info(f"New coins detected, backfilling history: {new_coins}")
-    total = 0
-    for coin_id in new_coins:
-        total += backfill_single_coin(coin_id)
-        time.sleep(REQUEST_DELAY_SECONDS)
-    return total
+    st.dataframe(daily_movers, use_container_width=True)
 
+with tab3:
+    st.subheader("Hourly Top Movers (last hour vs previous)")
 
-def extract_normalize_load_historical(coin_ids, days=HISTORICAL_DAYS):
-    total_rows = 0
-    for index, coin_id in enumerate(coin_ids):
-        total_rows += backfill_single_coin(coin_id, days)
-        if (index + 1) % 3 == 0:
-            logger.info("Pausing 30s after 3 coins to respect rate limits")
-            time.sleep(30)
-        time.sleep(REQUEST_DELAY_SECONDS)
+    hourly_movers = load_table("""
+        SELECT coin_id, previous_price_eur, current_price_eur, pct_change, gainer_rank, loser_rank
+        FROM staging_marts.mart_hourly_top_movers
+        ORDER BY pct_change DESC
+    """)
 
-    logger.info(f"Historical load complete: {total_rows} rows upserted total")
-    return total_rows
+    top_n = 10
+    chart_data_h = pd.concat([
+        hourly_movers.head(top_n),
+        hourly_movers.tail(top_n)
+    ]).drop_duplicates(subset="coin_id").sort_values("pct_change")
 
+    colors_h = ["crimson" if v < 0 else "seagreen" for v in chart_data_h["pct_change"]]
 
-def extract_normalize_load_daily(coin_ids):
-    upsert_sql = load_sql("insert/upsert_daily_crypto.sql")
+    fig3 = go.Figure(go.Bar(
+        x=chart_data_h["pct_change"],
+        y=chart_data_h["coin_id"],
+        orientation="h",
+        marker_color=colors_h,
+        text=chart_data_h["pct_change"].apply(lambda v: f"{v:+.2f}%"),
+        textposition="outside",
+    ))
+    fig3.update_layout(
+        title="Top gainers and losers — last hour",
+        xaxis_title="% Change",
+        yaxis_title="",
+        height=500,
+    )
+    st.plotly_chart(fig3, use_container_width=True)
 
-    url = f"{API_BASE}/coins/markets"
-    params = {
-        "vs_currency": "eur",
-        "ids": ",".join(coin_ids),
-        "order": "market_cap_desc",
-        "per_page": len(coin_ids),
-        "page": 1,
-    }
-    response = requests.get(url, params=params, timeout=30)
-    response.raise_for_status()
-    coins = response.json()
-
-    conn = get_connection()
-    cur = conn.cursor()
-    today = date.today()
-
-    rows = []
-    for coin in coins:
-        rows.append((
-            coin["id"],
-            coin.get("current_price"),
-            coin.get("market_cap"),
-            coin.get("market_cap_rank"),
-            coin.get("total_volume"),
-            coin.get("price_change_percentage_24h"),
-            coin.get("last_updated"),
-            today,
-        ))
-
-    execute_values(cur, upsert_sql, rows)
-    conn.commit()
-    cur.close()
-    conn.close()
-    logger.info(f"Daily snapshot loaded: {len(rows)} rows for {today}")
-    return len(rows)
-
-
-def run_daily_job():
-    logger.info("Starting crypto snapshot pipeline job")
-    ensure_tables()
-    top25_today = get_tracked_coins()
-    backfill_new_coins(top25_today)
-    all_known = get_all_known_coin_ids()
-    extract_normalize_load_daily(all_known)
-    logger.info("Crypto snapshot pipeline job complete")
-
-
-if __name__ == "__main__":
-    run_daily_job()
+    st.dataframe(hourly_movers, use_container_width=True)
