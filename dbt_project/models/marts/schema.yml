@@ -1,12 +1,12 @@
 version: 2
 
 models:
-  - name: fact_daily_price_summary
+  - name: fact_daily_ohlc
     description: >
       One row per coin per fully completed day. Open = earliest snapshot
       of the day, close = latest snapshot of the day, high/low = extremes
       across all snapshots, avg = mean across all snapshots. Only
-      processes days before today; never includes an in-progress day.
+      processes days before today.
     columns:
       - name: coin_id
         description: CoinGecko coin identifier.
@@ -26,20 +26,16 @@ models:
         description: Lowest price seen across all of the day's snapshots.
       - name: avg_price_eur
         description: Mean price across all of the day's snapshots.
-      - name: avg_market_cap_eur
-        description: Mean market capitalization in EUR across the day's snapshots.
-      - name: avg_volume_eur
-        description: Mean 24h trading volume in EUR across the day's snapshots.
       - name: movement_pct_of_the_day
         description: >
-          Percentage change from open to close for the day,
-          calculated as (close - open) / open * 100.
+          Percentage change from open to close for the day.
 
-  - name: fact_crypto_price_daily
+  - name: fact_price_history
     description: >
-      Merged daily price history combining three sources: the legacy
-      180-day seed, finalized daily summaries, and a live average for
-      today. Provides continuous, gap-free history.
+      Daily price history (one row per coin per day), combining the
+      legacy seed, finalized daily OHLC summaries, and a live average
+      for today. Incremental: only the last 2 days are reprocessed on
+      each run, older history stays untouched.
     columns:
       - name: coin_id
         description: CoinGecko coin identifier.
@@ -108,7 +104,7 @@ models:
 
   - name: dim_tracked_coins
     description: >
-      Coins present in the most recent snapshot - i.e. currently in the
+      Coins present in the most recent snapshot - currently in the
       tracked top 25 by market cap, right now.
     columns:
       - name: coin_id

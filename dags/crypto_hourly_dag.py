@@ -11,6 +11,7 @@ from crypto_pipeline import (
     ensure_tables,
     get_tracked_coins,
     backfill_new_coins,
+    get_all_known_coin_ids,
     extract_normalize_load_daily,
     send_slack_alert,
 )
@@ -38,9 +39,10 @@ default_args = {
 
 def run_hourly_snapshot():
     ensure_tables()
-    coin_ids = get_tracked_coins()
-    backfill_new_coins(coin_ids)
-    extract_normalize_load_daily(coin_ids)
+    top25_today = get_tracked_coins()
+    backfill_new_coins(top25_today)
+    all_known = get_all_known_coin_ids()
+    extract_normalize_load_daily(all_known)
 
 
 with DAG(

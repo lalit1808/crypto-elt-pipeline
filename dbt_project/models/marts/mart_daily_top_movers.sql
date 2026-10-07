@@ -6,5 +6,5 @@ select
     movement_pct_of_the_day as pct_change,
     rank() over (partition by price_date order by movement_pct_of_the_day desc) as gainer_rank,
     rank() over (partition by price_date order by movement_pct_of_the_day asc) as loser_rank
-from {{ ref('fact_daily_price_summary') }}
+from {{ ref('fact_daily_ohlc') }}
 order by price_date desc, pct_change desc

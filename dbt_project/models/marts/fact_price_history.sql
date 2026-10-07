@@ -1,3 +1,10 @@
+{{
+    config(
+        materialized='incremental',
+        unique_key=['coin_id', 'price_date']
+    )
+}}
+
 with legacy_seed as (
     select
         coin_id,
@@ -7,8 +14,12 @@ with legacy_seed as (
         volume_eur
     from {{ ref('stg_crypto_prices') }}
     where price_date not in (
-        select price_date from {{ ref('fact_daily_price_summary') }}
+        select price_date from {{ ref('fact_daily_ohlc') }}
     )
+
+    {% if is_incremental() %}
+    and price_date >= (select max(price_date) - interval '2 days' from {{ this }})
+    {% endif %}
 ),
 
 historical as (
@@ -18,8 +29,12 @@ historical as (
         avg_price_eur,
         avg_market_cap_eur as market_cap_eur,
         avg_volume_eur as volume_eur
-    from {{ ref('fact_daily_price_summary') }}
+    from {{ ref('fact_daily_ohlc') }}
     where price_date < current_date
+
+    {% if is_incremental() %}
+    and price_date >= (select max(price_date) - interval '2 days' from {{ this }})
+    {% endif %}
 ),
 
 derived_today as (

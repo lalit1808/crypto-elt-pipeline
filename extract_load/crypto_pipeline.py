@@ -27,15 +27,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def send_slack_alert(message):
-    webhook_url = os.environ.get("SLACK_WEBHOOK_URL")
-    if not webhook_url:
-        logger.warning("SLACK_WEBHOOK_URL not set, skipping alert")
-        return
-    try:
-        requests.post(webhook_url, json={"text": message}, timeout=10)
-    except requests.RequestException as e:
-        logger.warning(f"Failed to send Slack alert: {e}")
 
 def load_sql(relative_path):
     full_path = os.path.join(SQL_DIR, relative_path)
@@ -45,6 +36,17 @@ def load_sql(relative_path):
 
 def get_connection():
     return psycopg2.connect(**DB_CONFIG)
+
+
+def send_slack_alert(message):
+    webhook_url = os.environ.get("SLACK_WEBHOOK_URL")
+    if not webhook_url:
+        logger.warning("SLACK_WEBHOOK_URL not set, skipping alert")
+        return
+    try:
+        requests.post(webhook_url, json={"text": message}, timeout=10)
+    except requests.RequestException as e:
+        logger.warning(f"Failed to send Slack alert: {e}")
 
 
 def ensure_tables():
@@ -72,7 +74,7 @@ def get_tracked_coins(limit=TRACKED_UNIVERSE_SIZE):
     response.raise_for_status()
     coins = response.json()
     coin_ids = [coin["id"] for coin in coins]
-    logger.info(f"Tracked universe: {len(coin_ids)} coins")
+    logger.info(f"Tracked universe (today's top {limit}): {len(coin_ids)} coins")
     return coin_ids
 
 
@@ -84,6 +86,21 @@ def get_known_coin_ids():
     cur.close()
     conn.close()
     return known
+
+
+def get_all_known_coin_ids():
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT coin_id FROM raw.daily_crypto
+        UNION
+        SELECT coin_id FROM raw.all_crypto_data;
+    """)
+    all_known = [row[0] for row in cur.fetchall()]
+    cur.close()
+    conn.close()
+    logger.info(f"All coins ever tracked: {len(all_known)}")
+    return all_known
 
 
 def backfill_single_coin(coin_id, days=HISTORICAL_DAYS):
@@ -227,9 +244,10 @@ def extract_normalize_load_daily(coin_ids):
 def run_daily_job():
     logger.info("Starting crypto snapshot pipeline job")
     ensure_tables()
-    coin_ids = get_tracked_coins()
-    backfill_new_coins(coin_ids)
-    extract_normalize_load_daily(coin_ids)
+    top25_today = get_tracked_coins()
+    backfill_new_coins(top25_today)
+    all_known = get_all_known_coin_ids()
+    extract_normalize_load_daily(all_known)
     logger.info("Crypto snapshot pipeline job complete")
 
 
